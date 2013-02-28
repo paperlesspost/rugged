@@ -1,18 +1,18 @@
 /*
  * The MIT License
  *
- * Copyright (c) 2011 GitHub, Inc
- * 
+ * Copyright (c) 2013 GitHub, Inc
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -85,31 +85,63 @@ VALUE rugged_otype_new(git_otype t)
 	}
 }
 
+void rugged_oid_get(git_oid *oid, git_repository *repo, VALUE p)
+{
+	git_object *object;
+	int error;
 
-git_object *rugged_object_load(git_repository *repo, VALUE object_value, git_otype type)
+	if (rb_obj_is_kind_of(p, rb_cRuggedObject)) {
+		Data_Get_Struct(p, git_object, object);
+		git_oid_cpy(oid, git_object_id(object));
+	} else {
+		Check_Type(p, T_STRING);
+
+		/* Fast path: see if the 40-char string is an OID */
+		if (RSTRING_LEN(p) == 40 &&
+			git_oid_fromstr(oid, RSTRING_PTR(p)) == 0)
+			return;
+
+		error = git_revparse_single(&object, repo, StringValueCStr(p));
+		rugged_exception_check(error);
+
+		git_oid_cpy(oid, git_object_id(object));
+		git_object_free(object);
+	}
+}
+
+git_object *rugged_object_get(git_repository *repo, VALUE object_value, git_otype type)
 {
 	git_object *object = NULL;
 
-	if (TYPE(object_value) == T_STRING) {
-		git_oid oid;
+	if (rb_obj_is_kind_of(object_value, rb_cRuggedObject)) {
+		Data_Get_Struct(object_value, git_object, object);
+	} else {
 		int error;
 
-		error = git_oid_fromstr(&oid, StringValueCStr(object_value));
+		Check_Type(object_value, T_STRING);
+
+		/* Fast path: if we have a 40-char string, just perform the lookup directly */
+		if (RSTRING_LEN(object_value) == 40) {
+			git_oid oid;
+
+			/* If it's not an OID, we can still try the revparse */
+			if (git_oid_fromstr(&oid, RSTRING_PTR(object_value)) == 0) {
+				error = git_object_lookup(&object, repo, &oid, type);
+				rugged_exception_check(error);
+				return object;
+			}
+		}
+
+		/* Otherwise, assume the string is a revlist and try to parse it */
+		error = git_revparse_single(&object, repo, StringValueCStr(object_value));
 		rugged_exception_check(error);
-
-		error = git_object_lookup(&object, repo, &oid, type);
-		rugged_exception_check(error);
-
-	} else if (rb_obj_is_kind_of(object_value, rb_cRuggedObject)) {
-		Data_Get_Struct(object_value, git_object, object);
-
-		if (type != GIT_OBJ_ANY && git_object_type(object) != type)
-			rb_raise(rb_eTypeError, "Object is not of the required type");
-	} else {
-		rb_raise(rb_eTypeError, "Invalid GIT object; an object reference must be a SHA1 id or an object itself");
 	}
 
 	assert(object);
+
+	if (type != GIT_OBJ_ANY && git_object_type(object) != type)
+		rb_raise(rb_eArgError, "Object is not of the required type");
+
 	return object;
 }
 
@@ -164,7 +196,7 @@ static git_otype class2otype(VALUE klass)
 
 	if (klass == rb_cRuggedTree)
 		return GIT_OBJ_TREE;
-	
+
 	return GIT_OBJ_BAD;
 }
 
@@ -186,8 +218,7 @@ VALUE rb_git_object_lookup(VALUE klass, VALUE rb_repo, VALUE rb_hex)
 	Check_Type(rb_hex, T_STRING);
 	oid_length = (int)RSTRING_LEN(rb_hex);
 
-	if (!rb_obj_is_instance_of(rb_repo, rb_cRuggedRepo))
-		rb_raise(rb_eTypeError, "Expecting a Rugged Repository");
+	rugged_check_repo(rb_repo);
 
 	if (oid_length > GIT_OID_HEXSZ)
 		rb_raise(rb_eTypeError, "The given OID is too long");
@@ -205,6 +236,43 @@ VALUE rb_git_object_lookup(VALUE klass, VALUE rb_repo, VALUE rb_hex)
 	rugged_exception_check(error);
 
 	return rugged_object_new(rb_repo, object);
+}
+
+static VALUE rugged_object_rev_parse(VALUE klass, VALUE rb_repo, VALUE rb_spec, int as_obj)
+{
+	git_object *object;
+	const char *spec;
+	int error;
+	git_repository *repo;
+	VALUE ret;
+
+	Check_Type(rb_spec, T_STRING);
+	spec = RSTRING_PTR(rb_spec);
+
+	rugged_check_repo(rb_repo);
+
+	Data_Get_Struct(rb_repo, git_repository, repo);
+
+	error = git_revparse_single(&object, repo, spec);
+	rugged_exception_check(error);
+
+	if (as_obj) {
+		return rugged_object_new(rb_repo, object);
+	}
+
+	ret = rugged_create_oid(git_object_id(object));
+	git_object_free(object);
+	return ret;
+}
+
+VALUE rb_git_object_rev_parse(VALUE klass, VALUE rb_repo, VALUE rb_spec)
+{
+	return rugged_object_rev_parse(klass, rb_repo, rb_spec, 1);
+}
+
+VALUE rb_git_object_rev_parse_oid(VALUE klass, VALUE rb_repo, VALUE rb_spec)
+{
+	return rugged_object_rev_parse(klass, rb_repo, rb_spec, 0);
 }
 
 static VALUE rb_git_object_equal(VALUE self, VALUE other)
@@ -247,6 +315,8 @@ void Init_rugged_object()
 {
 	rb_cRuggedObject = rb_define_class_under(rb_mRugged, "Object", rb_cObject);
 	rb_define_singleton_method(rb_cRuggedObject, "lookup", rb_git_object_lookup, 2);
+	rb_define_singleton_method(rb_cRuggedObject, "rev_parse", rb_git_object_rev_parse, 2);
+	rb_define_singleton_method(rb_cRuggedObject, "rev_parse_oid", rb_git_object_rev_parse_oid, 2);
 	rb_define_singleton_method(rb_cRuggedObject, "new", rb_git_object_lookup, 2);
 
 	rb_define_method(rb_cRuggedObject, "read_raw", rb_git_object_read_raw, 0);

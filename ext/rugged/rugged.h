@@ -1,18 +1,18 @@
 /*
  * The MIT License
  *
- * Copyright (c) 2011 GitHub, Inc
- * 
+ * Copyright (c) 2013 GitHub, Inc
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -43,9 +43,10 @@
 #define CSTR2SYM(s) (ID2SYM(rb_intern((s))))
 
 /*
- * Initialization functions 
+ * Initialization functions
  */
 void Init_rugged_object();
+void Init_rugged_branch();
 void Init_rugged_commit();
 void Init_rugged_tree();
 void Init_rugged_tag();
@@ -56,6 +57,8 @@ void Init_rugged_revwalk();
 void Init_rugged_reference();
 void Init_rugged_config();
 void Init_rugged_remote();
+void Init_rugged_notes();
+void Init_rugged_settings();
 
 VALUE rb_git_object_init(git_otype type, int argc, VALUE *argv, VALUE self);
 
@@ -66,12 +69,14 @@ VALUE rugged_signature_new(const git_signature *sig, const char *encoding_name);
 VALUE rugged_index_new(VALUE klass, VALUE owner, git_index *index);
 VALUE rugged_object_new(VALUE owner, git_object *object);
 VALUE rugged_config_new(VALUE klass, VALUE owner, git_config *cfg);
+VALUE rugged_ref_new(VALUE klass, VALUE owner, git_reference *ref);
 
 VALUE rugged_otype_new(git_otype t);
 git_otype rugged_otype_get(VALUE rb_type);
 
 git_signature *rugged_signature_get(VALUE rb_person);
-git_object *rugged_object_load(git_repository *repo, VALUE object_value, git_otype type);
+git_object *rugged_object_get(git_repository *repo, VALUE object_value, git_otype type);
+void rugged_oid_get(git_oid *oid, git_repository *repo, VALUE p);
 
 static inline void rugged_set_owner(VALUE object, VALUE owner)
 {
@@ -80,15 +85,15 @@ static inline void rugged_set_owner(VALUE object, VALUE owner)
 
 static inline VALUE rugged_owner(VALUE object)
 {
-	rb_iv_get(object, "@owner");
+	return rb_iv_get(object, "@owner");
 }
+
+extern void rugged_exception_raise(int errorcode);
 
 static inline void rugged_exception_check(int errorcode)
 {
 	if (errorcode < 0)
-		rb_raise(rb_eRuntimeError, "%s\n(error code %d)", git_lasterror(), errorcode);
-
-	git_clearerror();
+		rugged_exception_raise(errorcode);
 }
 
 static inline int rugged_parse_bool(VALUE boolean)
@@ -99,21 +104,23 @@ static inline int rugged_parse_bool(VALUE boolean)
 	return boolean ? 1 : 0;
 }
 
+extern VALUE rb_cRuggedRepo;
+
+static inline void rugged_check_repo(VALUE rb_repo)
+{
+	if (!rb_obj_is_instance_of(rb_repo, rb_cRuggedRepo))
+		rb_raise(rb_eTypeError, "Expecting a Rugged Repository");
+}
+
 /* support for string encodings in 1.9 */
 #ifdef HAVE_RUBY_ENCODING_H
 #	define rugged_str_new(str, len, enc) rb_enc_str_new(str, len, enc)
 #	define rugged_str_new2(str, enc) rb_enc_str_new(str, strlen(str), enc)
 #	define rugged_str_ascii(str, len) rb_enc_str_new(str, len, rb_ascii8bit_encoding());
 
-static VALUE rugged_str_repoenc(const char *str, long len, VALUE rb_repo)
-{
-	VALUE rb_enc = rb_iv_get(rb_repo, "@encoding");
-	return rb_enc_str_new(str, len, NIL_P(rb_enc) ? NULL : rb_to_encoding(rb_enc));
-}
 #else
 #	define rugged_str_new(str, len, rb_enc)  rb_str_new(str, len)
 #	define rugged_str_new2(str, rb_enc) rb_str_new2(str)
-#	define rugged_str_repoenc(str, len, repo) rb_str_new(str, len)
 #	define rugged_str_ascii(str, len) rb_str_new(str, len)
 #endif
 
@@ -122,6 +129,13 @@ static inline VALUE rugged_create_oid(const git_oid *oid)
 	char out[40];
 	git_oid_fmt(out, oid);
 	return rugged_str_new(out, 40, NULL);
+}
+
+#define RUGGED_UNPACK_REFERENCE(_rb_obj, _rugged_obj) {\
+	if (DATA_PTR(_rb_obj) == NULL)\
+		rb_raise(rb_eRuntimeError,\
+			"This Git Reference has been deleted and no longer exists on the repository");\
+	Data_Get_Struct(_rb_obj, git_reference, _rugged_obj);\
 }
 
 #endif

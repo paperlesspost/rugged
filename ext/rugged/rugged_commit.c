@@ -1,7 +1,7 @@
 /*
  * The MIT License
  *
- * Copyright (c) 2011 GitHub, Inc
+ * Copyright (c) 2013 GitHub, Inc
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -31,9 +31,6 @@ extern VALUE rb_cRuggedSignature;
 VALUE rb_cRuggedCommit;
 
 /*
- * Commit code
- */
-/*
  *	call-seq:
  *		commit.message -> msg
  *
@@ -51,7 +48,7 @@ static VALUE rb_git_commit_message_GET(VALUE self)
 	git_commit *commit;
 
 #ifdef HAVE_RUBY_ENCODING_H
-	rb_encoding *encoding = NULL;
+	rb_encoding *encoding = rb_utf8_encoding();
 	const char *encoding_name;
 #endif
 
@@ -162,6 +159,27 @@ static VALUE rb_git_commit_tree_GET(VALUE self)
 
 /*
  *	call-seq:
+ *		commit.tree_id -> oid
+ *
+ *	Return the tree oid pointed at by this +commit+. The tree is
+ *	returned as a String object.
+ *
+ *		commit.tree_id #=> "f148106ca58764adc93ad4e2d6b1d168422b9796"
+ */
+static VALUE rb_git_commit_tree_id_GET(VALUE self)
+{
+	git_commit *commit;
+	const git_oid *tree_id;
+
+	Data_Get_Struct(self, git_commit, commit);
+
+	tree_id = git_commit_tree_id(commit);
+
+	return rugged_create_oid(tree_id);
+}
+
+/*
+ *	call-seq:
  *		commit.parents -> [commit, ...]
  *
  *	Return the parent(s) of this commit as an array of +Rugged::Commit+
@@ -189,6 +207,39 @@ static VALUE rb_git_commit_parents_GET(VALUE self)
 		error = git_commit_parent(&parent, commit, n);
 		rugged_exception_check(error);
 		rb_ary_push(ret_arr, rugged_object_new(owner, (git_object *)parent));
+	}
+
+	return ret_arr;
+}
+
+/*
+ *	call-seq:
+ *		commit.parent_ids -> [oid, ...]
+ *
+ *	Return the parent oid(s) of this commit as an array of oid String
+ *	objects. An array is always returned even when the commit has only
+ *	one or zero parents.
+ *
+ *		commit.parent_ids #=> => ["2cb831a8aea28b2c1b9c63385585b864e4d3bad1", ...]
+ *		root.parent_ids #=> []
+ */
+static VALUE rb_git_commit_parent_ids_GET(VALUE self)
+{
+	git_commit *commit;
+	const git_oid *parent_id;
+	unsigned int n, parent_count;
+	VALUE ret_arr;
+
+	Data_Get_Struct(self, git_commit, commit);
+
+	parent_count = git_commit_parentcount(commit);
+	ret_arr = rb_ary_new2((long)parent_count);
+
+	for (n = 0; n < parent_count; n++) {
+		parent_id = git_commit_parent_id(commit, n);
+		if (parent_id) {
+			rb_ary_push(ret_arr, rugged_create_oid(parent_id));
+		}
 	}
 
 	return ret_arr;
@@ -238,7 +289,7 @@ static VALUE rb_git_commit_create(VALUE self, VALUE rb_repo, VALUE rb_data)
 	Check_Type(rb_data, T_HASH);
 
 	if (!rb_obj_is_kind_of(rb_repo, rb_cRuggedRepo))
-		rb_raise(rb_eTypeError, "Expeting a Rugged::Repository instance");
+		rb_raise(rb_eTypeError, "Expecting a Rugged::Repository instance");
 	Data_Get_Struct(rb_repo, git_repository, repo);
 
 	rb_ref = rb_hash_aref(rb_data, CSTR2SYM("update_ref"));
@@ -262,7 +313,7 @@ static VALUE rb_git_commit_create(VALUE self, VALUE rb_repo, VALUE rb_data)
 	Check_Type(rb_parents, T_ARRAY);
 
 	rb_tree = rb_hash_aref(rb_data, CSTR2SYM("tree"));
-	tree = (git_tree *)rugged_object_load(repo, rb_tree, GIT_OBJ_TREE);
+	tree = (git_tree *)rugged_object_get(repo, rb_tree, GIT_OBJ_TREE);
 
 	parents = xmalloc(RARRAY_LEN(rb_parents) * sizeof(void *));
 	free_list = xmalloc(RARRAY_LEN(rb_parents) * sizeof(void *));
@@ -280,11 +331,11 @@ static VALUE rb_git_commit_create(VALUE self, VALUE rb_repo, VALUE rb_data)
 			git_oid oid;
 
 			error = git_oid_fromstr(&oid, StringValueCStr(p));
-			if (error < GIT_SUCCESS)
+			if (error < GIT_OK)
 				goto cleanup;
 
 			error = git_commit_lookup(&parent, repo, &oid);
-			if (error < GIT_SUCCESS)
+			if (error < GIT_OK)
 				goto cleanup;
 
 			free_ptr = parent;
@@ -339,6 +390,12 @@ void Init_rugged_commit()
 	rb_define_method(rb_cRuggedCommit, "committer", rb_git_commit_committer_GET, 0);
 	rb_define_method(rb_cRuggedCommit, "author", rb_git_commit_author_GET, 0);
 	rb_define_method(rb_cRuggedCommit, "tree", rb_git_commit_tree_GET, 0);
+
+	rb_define_method(rb_cRuggedCommit, "tree_id", rb_git_commit_tree_id_GET, 0);
+	rb_define_method(rb_cRuggedCommit, "tree_oid", rb_git_commit_tree_id_GET, 0);
+
 	rb_define_method(rb_cRuggedCommit, "parents", rb_git_commit_parents_GET, 0);
+	rb_define_method(rb_cRuggedCommit, "parent_ids", rb_git_commit_parent_ids_GET, 0);
+	rb_define_method(rb_cRuggedCommit, "parent_oids", rb_git_commit_parent_ids_GET, 0);
 }
 

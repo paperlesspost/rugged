@@ -1,18 +1,18 @@
 /*
  * The MIT License
  *
- * Copyright (c) 2011 GitHub, Inc
- * 
+ * Copyright (c) 2013 GitHub, Inc
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -24,8 +24,83 @@
 
 #include "rugged.h"
 
+const char *RUGGED_ERROR_NAMES[] = {
+	"NoMemError", /* GITERR_NOMEMORY, */
+	"OSError", /* GITERR_OS, */
+	"InvalidError", /* GITERR_INVALID, */
+	"ReferenceError", /* GITERR_REFERENCE, */
+	"ZlibError", /* GITERR_ZLIB, */
+	"RepositoryError", /* GITERR_REPOSITORY, */
+	"ConfigError", /* GITERR_CONFIG, */
+	"RegexError", /* GITERR_REGEX, */
+	"OdbError", /* GITERR_ODB, */
+	"IndexError", /* GITERR_INDEX, */
+	"ObjectError", /* GITERR_OBJECT, */
+	"NetworkError", /* GITERR_NET, */
+	"TagError", /* GITERR_TAG, */
+	"TreeError", /* GITERR_TREE, */
+	"IndexerError", /* GITERR_INDEXER, */
+};
+
+#define RUGGED_ERROR_COUNT (int)((sizeof(RUGGED_ERROR_NAMES)/sizeof(RUGGED_ERROR_NAMES[0])))
+
 VALUE rb_mRugged;
+VALUE rb_eRuggedError;
+VALUE rb_eRuggedErrors[RUGGED_ERROR_COUNT];
+
 static VALUE rb_mShutdownHook;
+
+/*
+ *	call-seq:
+ * 		Rugged.libgit2_version -> version
+ *
+ *	Returns an array representing the current libgit2 version in use. Using
+ *	the array makes it easier for the end-user to take conditional actions
+ *	based on each respective version attribute: major, minor, rev.
+ *
+ *	Rugged.libgit2_version
+ *		#=> [0, 17, 0]
+ */
+static VALUE rb_git_libgit2_version(VALUE self)
+{
+	int major;
+	int minor;
+	int rev;
+
+	git_libgit2_version(&major, &minor, &rev);
+
+	// We return an array of three elements to represent the version components
+	return rb_ary_new3(3, INT2NUM(major), INT2NUM(minor), INT2NUM(rev)); 
+}
+
+/*
+ *	call-seq:
+ * 		Rugged.capabilities-> capabilities
+ *
+ *	Returns an array representing the 'capabilities' that libgit2 was compiled
+ *	with — this includes GIT_CAP_THREADS (thread support) and GIT_CAP_HTTPS (https).
+ *	This is implemented in libgit2 with simple bitwise ops; we offer Rubyland an array
+ *	of symbols representing the capabilities.
+ *
+ *	The possible capabilities are "threads" and "https".
+ *
+ *	Rugged.capabilities
+ *		#=> [:threads, :https]
+ */
+static VALUE rb_git_capabilities(VALUE self)
+{
+	VALUE ret_arr = rb_ary_new();
+
+	int caps = git_libgit2_capabilities();
+
+	if (caps & GIT_CAP_THREADS)
+		rb_ary_push(ret_arr, CSTR2SYM("threads"));
+
+	if (caps & GIT_CAP_HTTPS)
+		rb_ary_push(ret_arr, CSTR2SYM("https"));
+
+	return ret_arr;
+}
 
 /*
  *	call-seq:
@@ -44,7 +119,7 @@ static VALUE rb_git_hex_to_raw(VALUE self, VALUE hex)
 	Check_Type(hex, T_STRING);
 	rugged_exception_check(git_oid_fromstr(&oid, StringValueCStr(hex)));
 
-	return rugged_str_ascii(oid.id, 20);
+	return rugged_str_ascii((const char *)oid.id, 20);
 }
 
 /*
@@ -67,10 +142,38 @@ static VALUE rb_git_raw_to_hex(VALUE self, VALUE raw)
 	if (RSTRING_LEN(raw) != GIT_OID_RAWSZ)
 		rb_raise(rb_eTypeError, "Invalid buffer size for an OID");
 
-	git_oid_fromraw(&oid, RSTRING_PTR(raw));
+	git_oid_fromraw(&oid, (const unsigned char *)RSTRING_PTR(raw));
 	git_oid_fmt(out, &oid);
 
 	return rugged_str_new(out, 40, NULL);
+}
+
+/*
+ *	call-seq:
+ *		Rugged.prettify_message(message, strip_comments) -> clean_message
+ *
+ *	Process a commit or tag message into standard form, by stripping trailing spaces and
+ *	comments, and making sure that the message has a proper header line.
+ */
+static VALUE rb_git_prettify_message(VALUE self, VALUE rb_message, VALUE rb_strip_comments)
+{
+	char *message;
+	int strip_comments, message_len;
+	VALUE result;
+
+	Check_Type(rb_message, T_STRING);
+	strip_comments = rugged_parse_bool(rb_strip_comments);
+
+	message_len = (int)RSTRING_LEN(rb_message) + 2;
+	message = xmalloc(message_len);
+
+	message_len = git_message_prettify(message, message_len, StringValueCStr(rb_message), strip_comments);
+	rugged_exception_check(message_len);
+
+	result = rugged_str_new(message, message_len - 1, rb_utf8_encoding());
+	xfree(message);
+
+	return result;
 }
 
 static VALUE minimize_cb(VALUE rb_oid, git_oid_shorten *shortener)
@@ -171,13 +274,50 @@ static void cleanup_cb(void *unused)
 	git_threads_shutdown();
 }
 
+void rugged_exception_raise(int errorcode)
+{
+	VALUE err_klass = rb_eRuggedError;
+	VALUE err_obj;
+	const git_error *error;
+
+	error = giterr_last();
+
+	if (!error)
+		return;
+
+	if (error->klass >= 0 && error->klass < RUGGED_ERROR_COUNT)
+		err_klass = rb_eRuggedErrors[error->klass];
+
+	err_obj = rb_exc_new2(err_klass, error->message);
+	giterr_clear();
+	rb_exc_raise(err_obj);
+}
+
 void Init_rugged()
 {
 	rb_mRugged = rb_define_module("Rugged");
 
+	/* Initialize the Error classes */
+	{
+		int i;
+
+		rb_eRuggedError = rb_define_class_under(rb_mRugged, "Error", rb_eStandardError);
+
+		rb_eRuggedErrors[0] = rb_define_class_under(rb_mRugged, RUGGED_ERROR_NAMES[0], rb_eNoMemError);
+		rb_eRuggedErrors[1] = rb_define_class_under(rb_mRugged, RUGGED_ERROR_NAMES[1], rb_eIOError);
+		rb_eRuggedErrors[2] = rb_define_class_under(rb_mRugged, RUGGED_ERROR_NAMES[2], rb_eArgError);
+
+		for (i = 3; i < RUGGED_ERROR_COUNT; ++i) {
+			rb_eRuggedErrors[i] = rb_define_class_under(rb_mRugged, RUGGED_ERROR_NAMES[i], rb_eRuggedError);
+		}
+	}
+
+	rb_define_module_function(rb_mRugged, "libgit2_version", rb_git_libgit2_version, 0);
+	rb_define_module_function(rb_mRugged, "capabilities", rb_git_capabilities, 0);  
 	rb_define_module_function(rb_mRugged, "hex_to_raw", rb_git_hex_to_raw, 1);
 	rb_define_module_function(rb_mRugged, "raw_to_hex", rb_git_raw_to_hex, 1);
 	rb_define_module_function(rb_mRugged, "minimize_oid", rb_git_minimize_oid, -1);
+	rb_define_module_function(rb_mRugged, "prettify_message", rb_git_prettify_message, 2);
 
 	Init_rugged_object();
 	Init_rugged_commit();
@@ -189,8 +329,11 @@ void Init_rugged()
 	Init_rugged_repo();
 	Init_rugged_revwalk();
 	Init_rugged_reference();
+	Init_rugged_branch();
 	Init_rugged_config();
 	Init_rugged_remote();
+	Init_rugged_notes();
+	Init_rugged_settings();
 
 	/* Constants */
 	rb_define_const(rb_mRugged, "SORT_NONE", INT2FIX(0));

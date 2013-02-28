@@ -47,6 +47,20 @@ module Rugged
       Rugged::Object.lookup(self, oid)
     end
 
+    # Look up an object by a revision string.
+    #
+    # Returns one of the four classes that inherit from Rugged::Object.
+    def rev_parse(spec)
+      Rugged::Object.rev_parse(self, spec)
+    end
+
+    # Look up an object by a revision string.
+    #
+    # Returns the oid of the matched object as a String
+    def rev_parse_oid(spec)
+      Rugged::Object.rev_parse_oid(self, spec)
+    end
+
     # Look up a single reference by name.
     #
     # Example:
@@ -93,33 +107,60 @@ module Rugged
       Rugged::Reference.each(self)
     end
 
-    # All of the tags in the repository.
+    # All the tags in the repository.
     #
     # Returns an Enumerable::Enumerator containing all the String tag names.
     def tags(pattern="")
       Rugged::Tag.each(self, pattern)
     end
 
-    # All of the remotes in the repository.
+    # All the remotes in the repository.
     #
     # Returns an Enumerable::Enumerator containing all the String remote names.
     def remotes
       Rugged::Remote.each(self)
     end
 
-    # Get the content of a file at a specific revision.
+    # All the branches in the repository
+    #
+    # Returns an Enumerable::Enumerator containing Rugged::Branch objects
+    def branches
+      Rugged::Branch.each(self)
+    end
+
+    # Create a new branch in the repository
+    #
+    # name - The name of the branch (without a full reference path)
+    # sha_or_ref - The target of the branch; either a String representing
+    # an OID or a reference name, or a Rugged::Object instance.
+    #
+    # Returns a Rugged::Branch object
+    def create_branch(name, sha_or_ref = "HEAD")
+      case sha_or_ref
+      when Rugged::Object
+        target = sha_or_ref.oid
+      else
+        target = rev_parse_oid(sha_or_ref)
+      end
+
+      Branch.create(self, name, target)
+    end
+
+    # Get the blob at a path for a specific revision.
     #
     # revision - The String SHA1.
     # path     - The String file path.
     #
     # Returns a String.
-    def file_at(revision, path)
+    def blob_at(revision, path)
       tree = Rugged::Commit.lookup(self, revision).tree
-      subtree = tree.get_subtree(path)
-      blob_data = subtree.get_entry(File.basename path)
-      return nil unless blob_data
+      begin
+        blob_data = tree.path(path)
+      rescue Rugged::IndexerError
+        return nil
+      end
       blob = Rugged::Blob.lookup(self, blob_data[:oid])
-      blob.content
+      (blob.type == :blob) ? blob : nil
     end
   end
 end

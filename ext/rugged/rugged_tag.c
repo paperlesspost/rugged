@@ -1,18 +1,18 @@
 /*
  * The MIT License
  *
- * Copyright (c) 2011 GitHub, Inc
- * 
+ * Copyright (c) 2013 GitHub, Inc
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
  * in the Software without restriction, including without limitation the rights
  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
  * copies of the Software, and to permit persons to whom the Software is
  * furnished to do so, subject to the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -35,7 +35,7 @@ VALUE rb_cRuggedTag;
  *
  *	Return the +object+ pointed at by this tag, as a <tt>Rugged::Object</tt>
  *	instance.
- *		
+ *
  *		tag.target #=> #<Rugged::Commit:0x108828918>
  */
 static VALUE rb_git_tag_target_GET(VALUE self)
@@ -56,6 +56,28 @@ static VALUE rb_git_tag_target_GET(VALUE self)
 
 /*
  *	call-seq:
+ *		tag.target_oid -> oid
+ *		tag.target_id -> oid
+ *
+ *	Return the oid pointed at by this tag, as a <tt>String</tt>
+ *	instance.
+ *
+ *		tag.target_id #=> "2cb831a8aea28b2c1b9c63385585b864e4d3bad1"
+ */
+static VALUE rb_git_tag_target_id_GET(VALUE self)
+{
+	git_tag *tag;
+	const git_oid *target_oid;
+
+	Data_Get_Struct(self, git_tag, tag);
+
+	target_oid = git_tag_target_id(tag);
+
+	return rugged_create_oid(target_oid);
+}
+
+/*
+ *	call-seq:
  *		tag.type -> t
  *
  *	Return a symbol representing the type of the objeced pointed at by
@@ -71,7 +93,7 @@ static VALUE rb_git_tag_target_type_GET(VALUE self)
 	git_tag *tag;
 	Data_Get_Struct(self, git_tag, tag);
 
-	return rugged_otype_new(git_tag_type(tag));
+	return rugged_otype_new(git_tag_target_type(tag));
 }
 
 /*
@@ -103,9 +125,15 @@ static VALUE rb_git_tag_name_GET(VALUE self)
 static VALUE rb_git_tag_tagger_GET(VALUE self)
 {
 	git_tag *tag;
-	Data_Get_Struct(self, git_tag, tag);
+	const git_signature *tagger;
 
-	return rugged_signature_new(git_tag_tagger(tag), NULL);
+	Data_Get_Struct(self, git_tag, tag);
+	tagger = git_tag_tagger(tag);
+
+	if (!tagger)
+		return Qnil;
+
+	return rugged_signature_new(tagger, NULL);
 }
 
 /*
@@ -120,9 +148,15 @@ static VALUE rb_git_tag_tagger_GET(VALUE self)
 static VALUE rb_git_tag_message_GET(VALUE self)
 {
 	git_tag *tag;
-	Data_Get_Struct(self, git_tag, tag);
+	const char *message;
 
-	return rugged_str_new2(git_tag_message(tag), NULL);
+	Data_Get_Struct(self, git_tag, tag);
+	message = git_tag_message(tag);
+
+	if (!message)
+		return Qnil;
+
+	return rugged_str_new2(message, NULL);
 }
 
 static VALUE rb_git_tag_create(VALUE self, VALUE rb_repo, VALUE rb_data)
@@ -134,7 +168,7 @@ static VALUE rb_git_tag_create(VALUE self, VALUE rb_repo, VALUE rb_data)
 	VALUE rb_name, rb_target, rb_tagger, rb_message, rb_force;
 
 	if (!rb_obj_is_kind_of(rb_repo, rb_cRuggedRepo))
-		rb_raise(rb_eTypeError, "Expeting a Rugged::Repository instance");
+		rb_raise(rb_eTypeError, "Expecting a Rugged::Repository instance");
 
 	Data_Get_Struct(rb_repo, git_repository, repo);
 
@@ -152,7 +186,7 @@ static VALUE rb_git_tag_create(VALUE self, VALUE rb_repo, VALUE rb_data)
 		Check_Type(rb_name, T_STRING);
 
 		rb_target = rb_hash_aref(rb_data, CSTR2SYM("target"));
-		target = rugged_object_load(repo, rb_target, GIT_OBJ_ANY);
+		target = rugged_object_get(repo, rb_target, GIT_OBJ_ANY);
 
 		rb_force = rb_hash_aref(rb_data, CSTR2SYM("force"));
 		if (!NIL_P(rb_force))
@@ -218,7 +252,7 @@ static VALUE rb_git_tag_each(int argc, VALUE *argv, VALUE self)
 	}
 
 	if (!rb_obj_is_kind_of(rb_repo, rb_cRuggedRepo))
-		rb_raise(rb_eTypeError, "Expeting a Rugged::Repository instance");
+		rb_raise(rb_eTypeError, "Expecting a Rugged::Repository instance");
 
 	Data_Get_Struct(rb_repo, git_repository, repo);
 
@@ -238,7 +272,7 @@ static VALUE rb_git_tag_delete(VALUE self, VALUE rb_repo, VALUE rb_name)
 	int error;
 
 	if (!rb_obj_is_kind_of(rb_repo, rb_cRuggedRepo))
-		rb_raise(rb_eTypeError, "Expeting a Rugged::Repository instance");
+		rb_raise(rb_eTypeError, "Expecting a Rugged::Repository instance");
 	Data_Get_Struct(rb_repo, git_repository, repo);
 
 	Check_Type(rb_name, T_STRING);
@@ -259,6 +293,8 @@ void Init_rugged_tag()
 	rb_define_method(rb_cRuggedTag, "message", rb_git_tag_message_GET, 0);
 	rb_define_method(rb_cRuggedTag, "name", rb_git_tag_name_GET, 0);
 	rb_define_method(rb_cRuggedTag, "target", rb_git_tag_target_GET, 0);
+	rb_define_method(rb_cRuggedTag, "target_oid", rb_git_tag_target_id_GET, 0);
+	rb_define_method(rb_cRuggedTag, "target_id", rb_git_tag_target_id_GET, 0);
 	rb_define_method(rb_cRuggedTag, "target_type", rb_git_tag_target_type_GET, 0);
 	rb_define_method(rb_cRuggedTag, "tagger", rb_git_tag_tagger_GET, 0);
 }

@@ -1,7 +1,7 @@
 /*
  * The MIT License
  *
- * Copyright (c) 2011 GitHub, Inc
+ * Copyright (c) 2013 GitHub, Inc
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,44 +33,83 @@ static void rb_git_remote__free(git_remote *remote)
 	git_remote_free(remote);
 }
 
-static VALUE rb_git_remote__new(int argc, VALUE *argv, VALUE klass)
+VALUE rugged_remote_new(VALUE klass, VALUE owner, git_remote *remote)
 {
-	VALUE rb_remote, rb_repo, rb_url, rb_name;
+	VALUE rb_remote = Data_Wrap_Struct(klass, NULL, &rb_git_remote__free, remote);
+	rugged_set_owner(rb_remote, owner);
+	return rb_remote;
+}
+
+/*
+ *  	call-seq:
+ *   		Remote.new(repository, url) -> remote
+ *
+ *   	Return a new remote from +url+ in +repository+ , the remote is not persisted:
+ *	- +url+: a valid remote url
+ *
+ *	Returns a new <tt>Rugged::Remote</tt> object
+ *
+ *		Rugged::Remote.new(@repo, 'git://github.com/libgit2/libgit2.git') #=> #<Rugged::Remote:0x00000001fbfa80>
+ */
+static VALUE rb_git_remote_new(VALUE klass, VALUE rb_repo, VALUE rb_url)
+{
 	git_remote *remote;
 	git_repository *repo;
 	const char *url;
 	int error;
 
-	rb_scan_args(argc, argv, "21", &rb_repo, &rb_url, &rb_name);
-
 	Check_Type(rb_url, T_STRING);
-
-	if (!rb_obj_is_instance_of(rb_repo, rb_cRuggedRepo))
-		rb_raise(rb_eTypeError, "Expecting a Rugged Repository");
+	rugged_check_repo(rb_repo);
 
 	Data_Get_Struct(rb_repo, git_repository, repo);
 
 	url = StringValueCStr(rb_url);
 
 	if (git_remote_valid_url(url)) {
-		if (!NIL_P(rb_name))
-			Check_Type(rb_name, T_STRING);
-
-		error = git_remote_new(
-			&remote,
-			repo,
-			StringValueCStr(rb_url),
-			NIL_P(rb_name) ? NULL : StringValueCStr(rb_name)
-		);
+		error = git_remote_create_inmemory(
+				&remote,
+				repo,
+				NULL,
+				url);
 	} else {
-		error = git_remote_load(&remote, repo, url);
+		rb_raise(rb_eArgError, "Invalid URL format");
 	}
 
 	rugged_exception_check(error);
 
-	rb_remote = Data_Wrap_Struct(klass, NULL, &rb_git_remote__free, remote);
-	rugged_set_owner(rb_remote, rb_repo);
-	return rb_remote;
+	return rugged_remote_new(klass, rb_repo, remote);
+}
+
+/*
+ *  	call-seq:
+ *   		Remote.lookup(repository, name) -> new_remote or nil
+ *
+ *   	Return an existing remote with +name+ in +repository+:
+ *	- +name+: a valid remote name
+ *
+ *	Returns a new <tt>Rugged::Remote</tt> object or +nil+ if the
+ *	remote doesn't exist
+ *
+ *		Rugged::Remote.lookup(@repo, 'origin') #=> #<Rugged::Remote:0x00000001fbfa80>
+ */
+static VALUE rb_git_remote_lookup(VALUE klass, VALUE rb_repo, VALUE rb_name)
+{
+	git_remote *remote;
+	git_repository *repo;
+	int error;
+
+	Check_Type(rb_name, T_STRING);
+	rugged_check_repo(rb_repo);
+	Data_Get_Struct(rb_repo, git_repository, repo);
+
+	error = git_remote_load(&remote, repo, StringValueCStr(rb_name));
+
+	if (error == GIT_ENOTFOUND)
+		return Qnil;
+
+	rugged_exception_check(error);
+
+	return rugged_remote_new(klass, rb_repo, remote);
 }
 
 static VALUE rb_git_remote_disconnect(VALUE self)
@@ -94,9 +133,9 @@ static VALUE rb_git_remote_connect(VALUE self, VALUE rb_direction)
 	id_direction = SYM2ID(rb_direction);
 
 	if (id_direction == rb_intern("fetch"))
-		direction = GIT_DIR_FETCH;
+		direction = GIT_DIRECTION_FETCH;
 	else if (id_direction == rb_intern("push"))
-		direction = GIT_DIR_PUSH;
+		direction = GIT_DIRECTION_PUSH;
 	else
 		rb_raise(rb_eTypeError,
 			"Invalid remote direction. Expected `:fetch` or `:push`");
@@ -125,7 +164,7 @@ static VALUE rugged_rhead_new(git_remote_head *head)
 static int cb_remote__ls(git_remote_head *head, void *payload)
 {
 	rb_funcall((VALUE)payload, rb_intern("call"), 1, rugged_rhead_new(head));
-	return GIT_SUCCESS;
+	return GIT_OK;
 }
 
 static VALUE rb_git_remote_ls(VALUE self)
@@ -146,9 +185,15 @@ static VALUE rb_git_remote_ls(VALUE self)
 static VALUE rb_git_remote_name(VALUE self)
 {
 	git_remote *remote;
+	const char * name;
 	Data_Get_Struct(self, git_remote, remote);
 
-	return rugged_str_new2(git_remote_name(remote), NULL);
+	name = git_remote_name(remote);
+
+	if (name)
+		return rugged_str_new2(name, NULL);
+	else
+		return Qnil;
 }
 
 static VALUE rb_git_remote_url(VALUE self)
@@ -171,18 +216,13 @@ static VALUE rb_git_remote_download(VALUE self)
 {
 	int error;
 	git_remote *remote;
-	char *path;
-	VALUE rb_path;
 
 	Data_Get_Struct(self, git_remote, remote);
 
-	error = git_remote_download(&path, remote);
+	error = git_remote_download(remote, NULL, NULL);
 	rugged_exception_check(error);
 
-	rb_path = rugged_str_new2(path, NULL);
-	free(path);
-
-	return rb_path;
+	return Qnil;
 }
 
 static VALUE rb_git_remote_update_tips(VALUE self)
@@ -192,6 +232,7 @@ static VALUE rb_git_remote_update_tips(VALUE self)
 
 	Data_Get_Struct(self, git_remote, remote);
 
+	// TODO: Maybe allow passing down a block?
 	error = git_remote_update_tips(remote);
 	rugged_exception_check(error);
 
@@ -227,7 +268,8 @@ void Init_rugged_remote()
 {
 	rb_cRuggedRemote = rb_define_class_under(rb_mRugged, "Remote", rb_cObject);
 
-	rb_define_singleton_method(rb_cRuggedRemote, "new", rb_git_remote__new, -1);
+	rb_define_singleton_method(rb_cRuggedRemote, "new", rb_git_remote_new, 2);
+	rb_define_singleton_method(rb_cRuggedRemote, "lookup", rb_git_remote_lookup, 2);
 	rb_define_singleton_method(rb_cRuggedRemote, "each", rb_git_remote_each, 1);
 
 	rb_define_method(rb_cRuggedRemote, "connect", rb_git_remote_connect, 1);

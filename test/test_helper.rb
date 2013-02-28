@@ -1,75 +1,55 @@
-dir = File.dirname(File.expand_path(__FILE__))
-$LOAD_PATH.unshift dir + '/../lib'
-$TEST_DIR = File.dirname(File.expand_path(__FILE__))
-$TESTING = true
-require 'test/unit'
-require 'tempfile'
 require 'rubygems'
+
+require 'tempfile'
+require 'tmpdir'
+require 'minitest/autorun'
 require 'rugged'
 require 'pp'
 
-##
-# test/spec/mini 3
-# http://gist.github.com/25455
-# chris@ozmm.org
-#
-def context(*args, &block)
-  return super unless (name = args.first) && block
-  require 'test/unit'
-  klass = Class.new(defined?(ActiveSupport::TestCase) ? ActiveSupport::TestCase : Test::Unit::TestCase) do
-    def self.test(name, &block)
-      define_method("test_#{name.gsub(/\W/,'_')}", &block) if block
+module Rugged
+  class TestCase < MiniTest::Unit::TestCase
+    TEST_DIR = File.dirname(File.expand_path(__FILE__))
+
+    protected
+    def with_default_encoding(encoding, &block)
+      old_encoding = Encoding.default_internal
+
+      new_encoding = Encoding.find(encoding)
+      Encoding.default_internal = new_encoding
+
+      yield new_encoding
+
+      Encoding.default_internal = old_encoding
     end
-    def self.xtest(*args) end
-    def self.setup(&block) define_method(:setup, &block) end
-    def self.teardown(&block) define_method(:teardown, &block) end
   end
-  (class << klass; self end).send(:define_method, :name) { name.gsub(/\W/,'_') }
-  klass.class_eval &block
-  ($contexts ||= []) << klass # make sure klass doesn't get GC'd
-  klass
-end
 
-def testpath(path)
-  File.join($TEST_DIR, path)
-end
-
-def test_repo(repo)
-  dir = temp_dir
-  repo_dir = testpath(File.join('fixtures', repo, '.'))
-  `git clone #{repo_dir} #{dir}`
-  dir
-end
-
-def temp_dir
-  file = Tempfile.new('dir')
-  dir = file.path
-  file.unlink
-  Dir.mkdir(dir)
-  dir
-end
-
-def rm_loose(oid)
-
-  base_path = File.join(@path, "objects", oid[0, 2])
-
-  file = File.join(base_path, oid[2, 38])
-  dir_contents = File.join(base_path, "*")
-
-  File.delete(file)
-
-  if Dir[dir_contents].empty?
-    Dir.delete(base_path)
+  module RepositoryAccess
+    def setup
+      @path = File.dirname(__FILE__) + '/fixtures/testrepo.git/'
+      @repo = Rugged::Repository.new(@path)
+    end
   end
-end
 
-def with_default_encoding(encoding, &block)
-  old_encoding = Encoding.default_internal
+  module TempRepositoryAccess
+    def setup
+      @path = temp_repo("testrepo.git")
+      @repo = Rugged::Repository.new(@path)
+    end
 
-  new_encoding = Encoding.find(encoding)
-  Encoding.default_internal = new_encoding
+    def teardown
+      destroy_temp_repo(@path)
+    end
 
-  yield new_encoding
+    protected
+    def temp_repo(repo)
+      dir = Dir.mktmpdir 'dir'
+      repo_dir = File.join(TestCase::TEST_DIR, (File.join('fixtures', repo, '.')))
+      `git clone #{repo_dir} #{dir}`
+      dir
+    end
 
-  Encoding.default_internal = old_encoding
+    def destroy_temp_repo(path)
+      FileUtils.remove_entry_secure(path)
+    end
+  end
 end

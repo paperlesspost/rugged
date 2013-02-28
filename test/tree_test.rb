@@ -1,14 +1,15 @@
-require File.expand_path "../test_helper", __FILE__
+require "test_helper"
 
-context "Rugged::Tree tests" do
-  setup do
-    path = File.dirname(__FILE__) + '/fixtures/testrepo.git/'
-    @repo = Rugged::Repository.new(path)
+class TreeTest < Rugged::TestCase
+  include Rugged::RepositoryAccess
+
+  def setup
+    super
     @oid = "c4dc1555e4d4fa0e0c9c3fc46734c7c35b3ce90b"
     @tree = @repo.lookup(@oid)
   end
 
-  test "can read the tree data" do
+  def test_read_tree_data
     assert_equal @oid, @tree.oid
     assert_equal :tree, @tree.type
     assert_equal 3, @tree.count
@@ -16,7 +17,7 @@ context "Rugged::Tree tests" do
     assert_equal "fa49b077972391ad58037050f2a75f74e3671e92", @tree[1][:oid]
   end
 
-  test "can read the tree entry data" do
+  def test_read_tree_entry_data
     bent = @tree[0]
     tent = @tree[2]
 
@@ -30,7 +31,24 @@ context "Rugged::Tree tests" do
     assert_equal :tree, @repo.lookup(tent[:oid]).type
   end
 
-  test "can iterate over the tree" do
+  def test_get_entry_by_oid
+    bent = @tree.get_entry_by_oid("1385f264afb75a56a5bec74243be9b367ba4ca08")
+    assert_equal "README", bent[:name]
+    assert_equal :blob, bent[:type]
+  end
+
+  def test_get_entry_by_oid_returns_nil_if_no_oid
+    nada = @tree.get_entry_by_oid("1385f264afb75a56a5bec74243be9b367ba4ca07")
+    assert_equal nil, nada
+  end
+
+  def test_get_entry_by_oid_throws_error_if_wrong_type
+    assert_raises TypeError do
+      @tree.get_entry_by_oid(:not_a_string)
+    end
+  end
+
+  def test_tree_iteration
     enum_test = @tree.sort { |a, b| a[:oid] <=> b[:oid] }.map { |e| e[:name] }.join(':')
     assert_equal "README:subdir:new.txt", enum_test
 
@@ -38,27 +56,31 @@ context "Rugged::Tree tests" do
     assert enum.kind_of? Enumerable
   end
 
-  test "can walk the tree, yielding only trees" do
+  def test_tree_walk_only_trees
     @tree.walk_trees {|root, entry| assert_equal :tree, entry[:type]}
   end
 
-  test "can walk the tree, yielding only blobs" do
+  def test_tree_walk_only_blobs
     @tree.walk_blobs {|root, entry| assert_equal :blob, entry[:type]}
   end
 
-  test "can iterate over the subtrees a tree" do
+  def test_iterate_subtrees
     @tree.each_tree {|tree| assert_equal :tree, tree[:type]}
   end
 
-  test "can iterate over the subtrees a tree" do
+  def test_iterate_subtree_blobs
     @tree.each_blob {|tree| assert_equal :blob, tree[:type]}
   end
+end
 
-  test "can write the tree data" do
+class TreeWriteTest < Rugged::TestCase
+  include Rugged::TempRepositoryAccess
+
+  def test_write_tree_data
     entry = {:type => :blob,
              :name => "README.txt",
              :oid  => "1385f264afb75a56a5bec74243be9b367ba4ca08",
-             :attributes => 33188}
+             :filemode => 33188}
 
     builder = Rugged::Tree::Builder.new
     builder << entry
@@ -66,5 +88,4 @@ context "Rugged::Tree tests" do
     obj = @repo.lookup(sha)
     assert_equal 38, obj.read_raw.len
   end
-
 end

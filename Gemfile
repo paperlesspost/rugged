@@ -1,3 +1,5 @@
 source "http://rubygems.org"
 
-gem 'rake-compiler'
+gemspec
+
+gem "rake-compiler"
